@@ -14,7 +14,7 @@ const server = http.createServer(app);
 // ===================== Socket.io Setup =====================
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000", // React frontend
+    origin: "*", // सर्व domains allow करतो (test साठी)
     methods: ["GET", "POST"],
   },
 });
@@ -51,7 +51,6 @@ try {
 }
 
 // ===================== Socket.IO Logic =====================
-// ===================== Socket.IO Logic =====================
 const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
@@ -64,7 +63,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ✅ Notify admin about user disconnection
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.id);
 
@@ -72,21 +70,15 @@ io.on("connection", (socket) => {
       if (id === socket.id) {
         onlineUsers.delete(email);
         console.log(`❌ Removed ${email} from online users`);
-
-        // 🔹 Send event to all connected admins
         io.emit("userDisconnected", { email });
-
         break;
       }
     }
   });
 });
 
-
-
-// ============================================================
-// ===================== Start Server =========================
+// ===================== Start Server =====================
 const PORT = process.env.PORT || 5030;
 server.listen(PORT, () => {
-  console.log(`✅ Server running on http://localhost:${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
