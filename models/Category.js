@@ -7,20 +7,21 @@ const ProductSchema = new mongoose.Schema({
   productPrice: { type: Number, required: true },
   productDisc: String,
   productImage: String,
-}, { _id: true }); // auto _id for each product
+}, { _id: true });
 
-// Subcategory schema (e.g. Mango, Banana)
+// Subcategory schema
 const SubcategorySchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: String,
   products: [ProductSchema]
 }, { _id: true });
 
-// Category schema (e.g. Fruits)
+// Category schema
 const CategorySchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   description: String,
   subcategories: [SubcategorySchema]
 }, { timestamps: true });
 
-module.exports = mongoose.model('Category', CategorySchema);
+// 👇 इथे collection नाव स्पष्ट दिलंय
+module.exports = mongoose.model('Category', CategorySchema, 'categories');
