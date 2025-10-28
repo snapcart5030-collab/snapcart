@@ -9,12 +9,12 @@ router.post("/", async (req, res) => {
     if (!email || !textMessage)
       return res.status(400).json({ msg: "Email and message required" });
 
-    const msg = new Contact({ username, email, textMessage });
-    await msg.save();
+    // 🔹 Fast insert
+    const msg = await Contact.create({ username, email, textMessage });
 
     res.json({ msg: "Message saved", data: msg });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Contact Create Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -23,12 +23,19 @@ router.post("/", async (req, res) => {
 router.get("/:email", async (req, res) => {
   try {
     const { email } = req.params;
+
+    // 🔹 Use lean() for performance
     const messages = await Contact.find({
       email,
       hiddenForUsers: { $ne: email },
-    }).sort({ createdAt: 1 });
+    })
+      .sort({ createdAt: 1 })
+      .lean()
+      .select("username email textMessage responses createdAt");
+
     res.json(messages);
   } catch (err) {
+    console.error("❌ Fetch Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -36,9 +43,14 @@ router.get("/:email", async (req, res) => {
 // 🧑‍💼 ADMIN FETCH ALL
 router.get("/", async (req, res) => {
   try {
-    const messages = await Contact.find().sort({ createdAt: -1 });
+    const messages = await Contact.find()
+      .sort({ createdAt: -1 })
+      .lean()
+      .select("username email textMessage responses createdAt");
+
     res.json(messages);
   } catch (err) {
+    console.error("❌ Admin Fetch Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -47,15 +59,19 @@ router.get("/", async (req, res) => {
 router.post("/:id/reply", async (req, res) => {
   try {
     const { message } = req.body;
-    const contact = await Contact.findById(req.params.id);
-    if (!contact) return res.status(404).json({ msg: "Message not found" });
 
-    contact.responses.push({ message });
-    await contact.save();
+    // 🔹 Direct update (less blocking than find + save)
+    const contact = await Contact.findByIdAndUpdate(
+      req.params.id,
+      { $push: { responses: { message } } },
+      { new: true }
+    );
+
+    if (!contact) return res.status(404).json({ msg: "Message not found" });
 
     res.json({ msg: "Reply added", data: contact });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Reply Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -64,17 +80,20 @@ router.post("/:id/reply", async (req, res) => {
 router.post("/:id/delete", async (req, res) => {
   try {
     const { email } = req.body;
-    const contact = await Contact.findById(req.params.id);
-    if (!contact) return res.status(404).json({ msg: "Message not found" });
+    if (!email) return res.status(400).json({ msg: "Email required" });
 
-    if (!contact.hiddenForUsers.includes(email)) {
-      contact.hiddenForUsers.push(email);
-      await contact.save();
-    }
+    // 🔹 Update in one query
+    const contact = await Contact.findByIdAndUpdate(
+      req.params.id,
+      { $addToSet: { hiddenForUsers: email } }, // add only if not exists
+      { new: true }
+    );
+
+    if (!contact) return res.status(404).json({ msg: "Message not found" });
 
     res.json({ msg: "Chat hidden for user", data: contact });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Delete Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -85,14 +104,15 @@ router.post("/deleteAll", async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ msg: "Email required" });
 
+    // 🔹 UpdateMany optimized
     await Contact.updateMany(
       { email, hiddenForUsers: { $ne: email } },
-      { $push: { hiddenForUsers: email } }
+      { $addToSet: { hiddenForUsers: email } }
     );
 
     res.json({ msg: "All messages hidden for user" });
   } catch (err) {
-    console.error(err);
+    console.error("❌ DeleteAll Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });

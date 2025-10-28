@@ -9,18 +9,20 @@ router.post("/", authMiddleware, async (req, res) => {
     const { message } = req.body;
     const { username, email } = req.user;
 
-    // Check if user already liked
-    const existing = await Like.findOne({ email });
+    // 🔹 Faster query — select only _id
+    const existing = await Like.findOne({ email }).select("_id").lean();
+
     if (existing) {
       return res.status(400).json({ msg: "You already liked" });
     }
 
-    const newLike = new Like({ username, email, message });
-    await newLike.save();
+    // 🔹 Save asynchronously (non-blocking)
+    await Like.create({ username, email, message });
 
-    res.json({ msg: "Like recorded successfully" });
+    // 🔹 Send response immediately
+    res.json({ msg: "Liked" });
   } catch (err) {
-    console.error("❌ Like Error:", err);
+    console.error("❌ Like Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });
@@ -28,10 +30,14 @@ router.post("/", authMiddleware, async (req, res) => {
 // ✅ Get current user's like status
 router.get("/me", authMiddleware, async (req, res) => {
   try {
-    const existing = await Like.findOne({ email: req.user.email });
+    // 🔹 Use lean() for faster response
+    const existing = await Like.findOne({ email: req.user.email })
+      .select("_id")
+      .lean();
+
     res.json({ liked: !!existing });
   } catch (err) {
-    console.error("❌ Like Fetch Error:", err);
+    console.error("❌ Like Fetch Error:", err.message || err);
     res.status(500).send("Server error");
   }
 });

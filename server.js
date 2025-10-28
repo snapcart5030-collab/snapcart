@@ -4,55 +4,55 @@ const connectDB = require("./config/db");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
-const Contact = require("./models/Contact");
-const orderDeliveryRoutes = require("./routes/orderDelivery");
 
 // ===================== App Setup =====================
 const app = express();
 const server = http.createServer(app);
 
+// ===================== MongoDB Connection =====================
+connectDB()
+  .then(() => console.log("✅ MongoDB ready"))
+  .catch((err) => {
+    console.error("❌ MongoDB connection failed:", err.message);
+    process.exit(1);
+  });
+
+// ===================== Middlewares =====================
+app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
+app.use(express.json({ limit: "10mb" }));
+
 // ===================== Socket.io Setup =====================
 const io = new Server(server, {
   cors: {
-    origin: "*", // सर्व domains allow करतो (test साठी)
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
-
-// ✅ Now io exists — import routes that need it
-const deliveryProgressRoutes = require("./routes/deliveryProgress")(io);
-
-// Connect MongoDB
-connectDB();
-
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
-
-// ✅ Make io globally accessible
 app.set("io", io);
 
-// Log when routes mount (helpful for debugging)
+// ===================== Online Users Map (shared across routes) =====================
+const onlineUsers = new Map();
+
+// ===================== Import Routes =====================
 try {
   app.use("/auth", require("./routes/auth"));
   app.use("/snapcartproducts", require("./routes/products"));
   app.use("/snapcartcategories", require("./routes/categories"));
   app.use("/cart", require("./routes/cart"));
   app.use("/orders", require("./routes/orders"));
-  app.use("/orderdelivery", orderDeliveryRoutes);
-  app.use("/orderstatus", require("./routes/orderStatus")(io, new Map()));
+  app.use("/orderdelivery", require("./routes/orderDelivery"));
+  app.use("/orderstatus", require("./routes/orderStatus")(io, onlineUsers));
   app.use("/contact", require("./routes/contact"));
   app.use("/api/likes", require("./routes/likes"));
   app.use("/api/otp", require("./routes/registerOtp"));
-  app.use("/deliveryprogress", deliveryProgressRoutes);
-  console.log("✅ Routes mounted.");
-} catch (mountErr) {
-  console.error("Error mounting routes:", mountErr);
+  app.use("/deliveryprogress", require("./routes/deliveryProgress")(io));
+
+  console.log("✅ All routes mounted successfully");
+} catch (err) {
+  console.error("❌ Error mounting routes:", err);
 }
 
 // ===================== Socket.IO Logic =====================
-const onlineUsers = new Map();
-
 io.on("connection", (socket) => {
   console.log("🟢 New connection:", socket.id);
 
@@ -65,11 +65,9 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.id);
-
     for (let [email, id] of onlineUsers.entries()) {
       if (id === socket.id) {
         onlineUsers.delete(email);
-        console.log(`❌ Removed ${email} from online users`);
         io.emit("userDisconnected", { email });
         break;
       }
@@ -77,8 +75,19 @@ io.on("connection", (socket) => {
   });
 });
 
+// ===================== Health Route =====================
+app.get("/health", (req, res) => res.send("✅ Server healthy"));
+
+// ===================== Unhandled Errors Protection =====================
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled Rejection:", err);
+});
+
 // ===================== Start Server =====================
 const PORT = process.env.PORT || 5030;
-server.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
