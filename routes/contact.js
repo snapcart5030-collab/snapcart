@@ -12,14 +12,24 @@ router.post("/", async (req, res) => {
     const msg = new Contact({ username, email, textMessage });
     await msg.save();
 
-    res.json({ msg: "Message saved", data: msg });
+    // ✅ Emit socket event to admin in realtime
+    const io = req.app.get("io");
+    io.emit("receiveMessage", {
+      sender: email,
+      email,
+      username,
+      message: textMessage,
+      contactId: msg._id,
+    });
+
+    res.json({ msg: "Message sent successfully", data: msg });
   } catch (err) {
     console.error(err);
     res.status(500).send("Server error");
   }
 });
 
-// 📥 USER FETCH MESSAGES (excluding deleted)
+// 📥 USER FETCH MESSAGES
 router.get("/:email", async (req, res) => {
   try {
     const { email } = req.params;
@@ -53,48 +63,18 @@ router.post("/:id/reply", async (req, res) => {
     contact.responses.push({ message });
     await contact.save();
 
+    // ✅ Emit socket to specific user (if online)
+    const io = req.app.get("io");
+    io.emit("receiveMessage", {
+      sender: "admin@gmail.com",
+      receiver: contact.email,
+      message,
+      contactId: contact._id,
+    });
+
     res.json({ msg: "Reply added", data: contact });
   } catch (err) {
     console.error(err);
     res.status(500).send("Server error");
   }
 });
-
-// ❌ USER SOFT DELETE (single)
-router.post("/:id/delete", async (req, res) => {
-  try {
-    const { email } = req.body;
-    const contact = await Contact.findById(req.params.id);
-    if (!contact) return res.status(404).json({ msg: "Message not found" });
-
-    if (!contact.hiddenForUsers.includes(email)) {
-      contact.hiddenForUsers.push(email);
-      await contact.save();
-    }
-
-    res.json({ msg: "Chat hidden for user", data: contact });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Server error");
-  }
-});
-
-// ❌ USER SOFT DELETE ALL
-router.post("/deleteAll", async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ msg: "Email required" });
-
-    await Contact.updateMany(
-      { email, hiddenForUsers: { $ne: email } },
-      { $push: { hiddenForUsers: email } }
-    );
-
-    res.json({ msg: "All messages hidden for user" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Server error");
-  }
-});
-
-module.exports = router;
