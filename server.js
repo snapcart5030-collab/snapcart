@@ -4,44 +4,35 @@ const connectDB = require("./config/db");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
+const Contact = require("./models/Contact");
 const orderDeliveryRoutes = require("./routes/orderDelivery");
 
+// ===================== App Setup =====================
 const app = express();
 const server = http.createServer(app);
-
-// ===================== CORS =====================
-const allowedOrigins = [
-  "http://localhost:5030",
-  "https://snapcart-usja.onrender.com", 
-];
-
-app.use(
-  cors({
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
-
-app.use(express.json({ limit: "10mb" }));
 
 // ===================== Socket.io Setup =====================
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: "*", // सर्व domains allow करतो (test साठी)
     methods: ["GET", "POST"],
   },
 });
 
-// ===================== MongoDB =====================
-connectDB();
-
-// ✅ Make io available globally (optional for routes)
-app.set("io", io);
-
-// ✅ Import routes after io initialized
+// ✅ Now io exists — import routes that need it
 const deliveryProgressRoutes = require("./routes/deliveryProgress")(io);
 
+// Connect MongoDB
+connectDB();
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: "10mb" }));
+
+// ✅ Make io globally accessible
+app.set("io", io);
+
+// Log when routes mount (helpful for debugging)
 try {
   app.use("/auth", require("./routes/auth"));
   app.use("/snapcartproducts", require("./routes/products"));
@@ -54,68 +45,40 @@ try {
   app.use("/api/likes", require("./routes/likes"));
   app.use("/api/otp", require("./routes/registerOtp"));
   app.use("/deliveryprogress", deliveryProgressRoutes);
-  console.log("✅ Routes mounted successfully.");
-} catch (err) {
-  console.error("❌ Error mounting routes:", err);
+  console.log("✅ Routes mounted.");
+} catch (mountErr) {
+  console.error("Error mounting routes:", mountErr);
 }
 
-// ===================== SOCKET.IO CHAT LOGIC =====================
+// ===================== Socket.IO Logic =====================
 const onlineUsers = new Map();
 
 io.on("connection", (socket) => {
-  console.log("🟢 User connected:", socket.id);
+  console.log("🟢 New connection:", socket.id);
 
-  // ✅ Register user by email
   socket.on("register", (email) => {
     if (email) {
       onlineUsers.set(email, socket.id);
-      console.log(`✅ Registered: ${email} -> ${socket.id}`);
+      console.log(`✅ ${email} connected as ${socket.id}`);
     }
   });
 
-  // ✅ Real-time send/receive message between user & admin
-  socket.on("sendMessage", (data) => {
-    const { sender, receiver, message, contactId } = data;
-    const receiverSocketId = onlineUsers.get(receiver);
-
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit("receiveMessage", {
-        sender,
-        receiver,
-        message,
-        contactId,
-      });
-      console.log(`📩 Message sent from ${sender} to ${receiver}`);
-    } else {
-      console.log(`⚠️ Receiver (${receiver}) is offline`);
-    }
-  });
-
-  // ✅ Typing indicator
-  socket.on("typing", (data) => {
-    const { sender, receiver } = data;
-    const receiverSocketId = onlineUsers.get(receiver);
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit("typing", { sender, receiver });
-    }
-  });
-
-  // ✅ Handle user disconnect
   socket.on("disconnect", () => {
-    console.log("🔴 Disconnected:", socket.id);
+    console.log("🔴 User disconnected:", socket.id);
+
     for (let [email, id] of onlineUsers.entries()) {
       if (id === socket.id) {
         onlineUsers.delete(email);
+        console.log(`❌ Removed ${email} from online users`);
         io.emit("userDisconnected", { email });
-        console.log(`❌ Removed ${email} (offline)`);
         break;
       }
     }
   });
 });
 
-// ===================== START SERVER =====================
+// ===================== Start Server =====================
 const PORT = process.env.PORT || 5030;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
