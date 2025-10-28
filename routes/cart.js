@@ -1,54 +1,48 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const Cart = require("../models/Cart");
-const Category = require("../models/Category");
-const auth = require("../middlewares/auth");
+const Cart = require('../models/Cart');
+const Category = require('../models/Category');
+const auth = require('../middlewares/auth'); // your auth middleware
 
 // Get current user's cart
-router.get("/", auth, async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const cart = await Cart.findOne({ userEmail: req.user.email }).lean();
+    const cart = await Cart.findOne({ userEmail: req.user.email });
     res.json(cart || { userEmail: req.user.email, items: [] });
   } catch (err) {
-    console.error("GET CART ERROR:", err);
-    res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send('Server error');
   }
 });
 
 // Add item to cart
-router.post("/add", auth, async (req, res) => {
+router.post('/add', auth, async (req, res) => {
   try {
     const { productId, quantity } = req.body;
     const qty = parseInt(quantity) || 1;
-    if (!productId)
-      return res.status(400).json({ msg: "ProductId is required" });
 
-    // ✅ Fetch only matching product instead of all categories
-    const category = await Category.findOne({
-      "subcategories.products._id": productId,
-    }).lean();
+    if (!productId) return res.status(400).json({ msg: 'ProductId is required' });
 
-    if (!category) return res.status(404).json({ msg: "Product not found" });
-
+    // Search product inside all categories/subcategories
+    const categories = await Category.find();
     let product = null;
-    for (const sub of category.subcategories) {
-      const found = sub.products.find(
-        (p) => p._id.toString() === productId.toString()
-      );
-      if (found) {
-        product = found;
-        break;
+
+    outer: for (const cat of categories) {
+      for (const sub of cat.subcategories) {
+        if (!sub.products || !sub.products.length) continue;
+        product = sub.products.find(p => p._id.toString() === productId);
+        if (product) break outer;
       }
     }
 
-    if (!product) return res.status(404).json({ msg: "Product not found" });
+    if (!product) return res.status(404).json({ msg: 'Product not found' });
 
-    // ✅ Find or create user cart
+    // Find or create cart
     let cart = await Cart.findOne({ userEmail: req.user.email });
     if (!cart) cart = new Cart({ userEmail: req.user.email, items: [] });
 
-    // ✅ Update quantity or push new item
-    const existing = cart.items.find((i) => i.productId === productId);
+    // Check if product already in cart
+    const existing = cart.items.find(i => i.productId === productId);
     if (existing) {
       existing.quantity += qty;
     } else {
@@ -57,32 +51,31 @@ router.post("/add", auth, async (req, res) => {
         productName: product.productName,
         productPrice: product.productPrice,
         productImage: product.productImage,
-        quantity: qty,
+        quantity: qty
       });
     }
 
     cart.updatedAt = Date.now();
     await cart.save();
+    res.json(cart);
 
-    // ✅ Send only updated items (faster network response)
-    res.json({ items: cart.items });
   } catch (err) {
-    console.error("ADD CART ERROR:", err);
-    res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send('Server error');
   }
 });
 
 // Remove or decrement quantity
-router.post("/remove", auth, async (req, res) => {
+router.post('/remove', auth, async (req, res) => {
   try {
     const { productId, quantity } = req.body;
     const qty = parseInt(quantity) || 1;
 
     const cart = await Cart.findOne({ userEmail: req.user.email });
-    if (!cart) return res.status(400).json({ msg: "No cart found" });
+    if (!cart) return res.status(400).json({ msg: 'No cart found' });
 
-    const idx = cart.items.findIndex((i) => i.productId === productId);
-    if (idx === -1) return res.status(404).json({ msg: "Product not in cart" });
+    const idx = cart.items.findIndex(i => i.productId === productId);
+    if (idx === -1) return res.status(404).json({ msg: 'Product not in cart' });
 
     cart.items[idx].quantity -= qty;
     if (cart.items[idx].quantity <= 0) {
@@ -91,43 +84,42 @@ router.post("/remove", auth, async (req, res) => {
 
     cart.updatedAt = Date.now();
     await cart.save();
-    res.json({ items: cart.items });
+    res.json(cart);
   } catch (err) {
-    console.error("REMOVE CART ERROR:", err);
-    res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send('Server error');
   }
 });
 
 // Delete a product from cart
-router.delete("/item/:productId", auth, async (req, res) => {
+router.delete('/item/:productId', auth, async (req, res) => {
   try {
     const { productId } = req.params;
     const cart = await Cart.findOne({ userEmail: req.user.email });
-    if (!cart) return res.status(400).json({ msg: "No cart found" });
+    if (!cart) return res.status(400).json({ msg: 'No cart found' });
 
-    cart.items = cart.items.filter((i) => i.productId !== productId);
+    cart.items = cart.items.filter(i => i.productId !== productId);
     cart.updatedAt = Date.now();
     await cart.save();
-
-    res.json({ items: cart.items });
+    res.json(cart);
   } catch (err) {
-    console.error("DELETE ITEM ERROR:", err);
-    res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send('Server error');
   }
 });
 
 // Clear cart
-router.post("/clear", auth, async (req, res) => {
+router.post('/clear', auth, async (req, res) => {
   try {
-    const cart = await Cart.findOne({ userEmail: req.user.email });
-    if (!cart) return res.json({ msg: "Cart already empty" });
+    let cart = await Cart.findOne({ userEmail: req.user.email });
+    if (!cart) return res.json({ msg: 'Cart already empty' });
 
     cart.items = [];
     await cart.save();
-    res.json({ msg: "Cart cleared" });
+    res.json({ msg: 'Cart cleared' });
   } catch (err) {
-    console.error("CLEAR CART ERROR:", err);
-    res.status(500).send("Server error");
+    console.error(err);
+    res.status(500).send('Server error');
   }
 });
 
