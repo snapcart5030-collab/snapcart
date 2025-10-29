@@ -4,14 +4,23 @@ const router = express.Router();
 const mongoose = require("mongoose");
 const Order = require("../models/Order");
 const OrderStatus = require("../models/OrderStatus");
+const Cart = require("../models/Cart"); // ✅ added import for checkout
 
 // ✅ Create a new order
 router.post("/", async (req, res) => {
   try {
     const { userEmail, username, mobile, products, totalAmount, location } = req.body;
 
-    if (!userEmail || !products?.length)
-      return res.status(400).json({ msg: "User email and products required." });
+    // Log request for debugging
+    console.log("📦 Incoming Order Body:", req.body);
+
+    // Validate input
+    if (!userEmail) {
+      return res.status(400).json({ msg: "❌ userEmail is required." });
+    }
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ msg: "❌ products must be a non-empty array." });
+    }
 
     const newOrder = new Order({
       userEmail,
@@ -35,7 +44,7 @@ router.post("/", async (req, res) => {
     savedOrder.statusRef = statusDoc._id;
     await savedOrder.save();
 
-    res.json({ msg: "Order placed successfully!", order: savedOrder });
+    res.json({ msg: "✅ Order placed successfully!", order: savedOrder });
   } catch (err) {
     console.error("❌ Create order error:", err);
     res.status(500).json({ msg: "Server error" });
@@ -72,7 +81,6 @@ router.get("/:orderId", async (req, res) => {
   }
 });
 
-
 // ✅ Checkout and place order
 router.post("/checkout", async (req, res) => {
   try {
@@ -83,7 +91,7 @@ router.post("/checkout", async (req, res) => {
     if (!userEmail)
       return res.status(400).json({ msg: "User not authenticated." });
 
-    // Fetch cart items for user (example)
+    // Fetch cart items for user
     const cartItems = await Cart.find({ userEmail });
     if (!cartItems?.length)
       return res.status(400).json({ msg: "Cart is empty." });
@@ -117,13 +125,12 @@ router.post("/checkout", async (req, res) => {
     // Clear cart
     await Cart.deleteMany({ userEmail });
 
-    res.json({ msg: "Order placed successfully!", order: savedOrder });
+    res.json({ msg: "✅ Order placed successfully!", order: savedOrder });
   } catch (err) {
     console.error("❌ Checkout order error:", err);
     res.status(500).json({ msg: "Server error" });
   }
 });
-
 
 // ✅ Delete an order
 router.delete("/:orderId", async (req, res) => {
@@ -136,7 +143,7 @@ router.delete("/:orderId", async (req, res) => {
     if (!deleted) return res.status(404).json({ msg: "Order not found" });
 
     await OrderStatus.findOneAndDelete({ orderId });
-    res.json({ msg: "Order deleted successfully" });
+    res.json({ msg: "🗑️ Order deleted successfully" });
   } catch (err) {
     console.error("❌ Delete order error:", err);
     res.status(500).json({ msg: "Server error" });
