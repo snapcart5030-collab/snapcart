@@ -1,3 +1,4 @@
+// routes/order.js
 const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
@@ -77,18 +78,22 @@ router.get("/:orderId", async (req, res) => {
   }
 });
 
-// ✅ Checkout and place order (no JWT required)
+// ✅ Checkout and place order (fixed)
 router.post("/checkout", async (req, res) => {
   try {
     const { userEmail, username, mobile, latitude, longitude, address } = req.body;
 
-    if (!userEmail)
-      return res.status(400).json({ msg: "❌ userEmail is required. Please login first." });
+    console.log("🧾 Checkout Request Body:", req.body);
+
+    if (!userEmail) {
+      return res.status(400).json({ msg: "User not authenticated. Please login first." });
+    }
 
     // Fetch user's cart
     const cartItems = await Cart.find({ userEmail });
-    if (!cartItems?.length)
-      return res.status(400).json({ msg: "🛒 Cart is empty." });
+    if (!cartItems?.length) {
+      return res.status(400).json({ msg: "Cart is empty." });
+    }
 
     const totalAmount = cartItems.reduce(
       (sum, item) => sum + item.price * item.quantity,
@@ -107,7 +112,6 @@ router.post("/checkout", async (req, res) => {
 
     const savedOrder = await newOrder.save();
 
-    // Create linked status doc
     const statusDoc = await OrderStatus.create({
       orderId: savedOrder._id,
       userEmail,
@@ -117,7 +121,7 @@ router.post("/checkout", async (req, res) => {
     savedOrder.statusRef = statusDoc._id;
     await savedOrder.save();
 
-    // Clear cart after successful order
+    // Clear cart after placing order
     await Cart.deleteMany({ userEmail });
 
     res.json({ msg: "✅ Order placed successfully!", order: savedOrder });
