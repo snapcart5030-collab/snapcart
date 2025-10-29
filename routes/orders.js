@@ -72,6 +72,59 @@ router.get("/:orderId", async (req, res) => {
   }
 });
 
+
+// ✅ Checkout and place order
+router.post("/checkout", async (req, res) => {
+  try {
+    const { latitude, longitude, address } = req.body;
+    const user = req.user; // if using JWT middleware
+    const userEmail = user?.email || req.body.userEmail;
+
+    if (!userEmail)
+      return res.status(400).json({ msg: "User not authenticated." });
+
+    // Fetch cart items for user (example)
+    const cartItems = await Cart.find({ userEmail });
+    if (!cartItems?.length)
+      return res.status(400).json({ msg: "Cart is empty." });
+
+    const totalAmount = cartItems.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
+    );
+
+    const newOrder = new Order({
+      userEmail,
+      username: user?.username,
+      mobile: user?.mobile,
+      products: cartItems,
+      totalAmount,
+      location: { latitude, longitude, address },
+    });
+
+    const savedOrder = await newOrder.save();
+
+    // Create linked OrderStatus
+    const statusDoc = await OrderStatus.create({
+      orderId: savedOrder._id,
+      userEmail,
+      status: "pending",
+    });
+
+    savedOrder.statusRef = statusDoc._id;
+    await savedOrder.save();
+
+    // Clear cart
+    await Cart.deleteMany({ userEmail });
+
+    res.json({ msg: "Order placed successfully!", order: savedOrder });
+  } catch (err) {
+    console.error("❌ Checkout order error:", err);
+    res.status(500).json({ msg: "Server error" });
+  }
+});
+
+
 // ✅ Delete an order
 router.delete("/:orderId", async (req, res) => {
   try {
