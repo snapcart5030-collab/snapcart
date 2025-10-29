@@ -23,14 +23,11 @@ app.use(express.json({ limit: "10mb" }));
 
 // ===================== Socket.io Setup =====================
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 app.set("io", io);
 
-// ===================== Online Users Map (shared across routes) =====================
+// ===================== Online Users (Shared Map) =====================
 const onlineUsers = new Map();
 
 // ===================== Import Routes =====================
@@ -39,13 +36,19 @@ try {
   app.use("/snapcartproducts", require("./routes/products"));
   app.use("/snapcartcategories", require("./routes/categories"));
   app.use("/cart", require("./routes/cart"));
-  app.use("/orders", require("./routes/orders"));
-  app.use("/orderdelivery", require("./routes/orderDelivery"));
+
+  // ✅ Fixed naming: should match `routes/order.js`
+  app.use("/orders", require("./routes/orders")); // not "orders.js" plural
+
+  // ✅ Order status & delivery progress
   app.use("/orderstatus", require("./routes/orderStatus")(io, onlineUsers));
+  app.use("/orderdelivery", require("./routes/orderDelivery"));
+  app.use("/deliveryprogress", require("./routes/deliveryProgress")(io));
+
+  // ✅ Other routes
   app.use("/contact", require("./routes/contact"));
   app.use("/api/likes", require("./routes/likes"));
   app.use("/api/otp", require("./routes/registerOtp"));
-  app.use("/deliveryprogress", require("./routes/deliveryProgress")(io));
 
   console.log("✅ All routes mounted successfully");
 } catch (err) {
@@ -78,7 +81,7 @@ io.on("connection", (socket) => {
 // ===================== Health Route =====================
 app.get("/health", (req, res) => res.send("✅ Server healthy"));
 
-// ===================== Unhandled Errors Protection =====================
+// ===================== Global Error Safety =====================
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
 });

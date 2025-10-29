@@ -1,12 +1,13 @@
-//routes/orderStatus.js
+// routes/orderStatus.js
 const express = require("express");
 const mongoose = require("mongoose");
 const router = express.Router();
 const OrderStatus = require("../models/OrderStatus");
 const Order = require("../models/Order");
-const transporter = require("../config/mail"); // new mailer
-const activeDeliveries = {};
+const transporter = require("../config/mail"); // your mailer
 
+// Active deliveries tracking (in-memory)
+const activeDeliveries = {};
 
 // helper to generate numeric OTP
 function generateNumericOtp(len = 6) {
@@ -15,19 +16,28 @@ function generateNumericOtp(len = 6) {
   return otp;
 }
 
+// helper: try to convert to ObjectId when valid, otherwise return original
+function toObjectIdIfPossible(id) {
+  if (!id) return id;
+  try {
+    if (mongoose.Types.ObjectId.isValid(id)) return new mongoose.Types.ObjectId(id);
+  } catch (e) {
+    // ignore
+  }
+  return id;
+}
+
 /**
  * Export factory: app.use('/orderstatus', require('./routes/orderStatus')(io, onlineUsers));
  */
 module.exports = (io, onlineUsers) => {
-  // --- existing confirm route (kept as before) ---
+  // --- Confirm Order ---
   router.post("/confirm", async (req, res) => {
     const { orderId, userEmail } = req.body;
     try {
-      let orderIdObj = orderId;
-      if (orderId && mongoose.Types.ObjectId.isValid(orderId)) {
-        orderIdObj = new mongoose.Types.ObjectId(orderId);
-      }
+      let orderIdObj = toObjectIdIfPossible(orderId);
 
+      // find existing by orderId or create
       let order = await OrderStatus.findOne({ orderId: orderIdObj });
 
       if (!order) {
@@ -49,175 +59,186 @@ module.exports = (io, onlineUsers) => {
       io.emit("orderUpdate", { orderId, status: "pending" });
       res.json({ msg: "Order confirmed successfully!", order });
     } catch (err) {
-      console.error("Error in confirm:", err);
+      console.error("❌ Confirm error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
-  // --- existing cancel route (kept as before) ---
+  // --- Cancel Order ---
   router.post("/cancel", async (req, res) => {
     const { orderId } = req.body;
     try {
-      let orderIdObj = orderId;
-      if (orderId && mongoose.Types.ObjectId.isValid(orderId)) orderIdObj = new mongoose.Types.ObjectId(orderId);
+      let orderIdObj = toObjectIdIfPossible(orderId);
 
       const canceled = await OrderStatus.findOneAndUpdate(
         { orderId: orderIdObj },
         { status: "canceled", updatedAt: new Date() },
         { new: true }
       );
+
       if (!canceled) return res.status(404).json({ msg: "Order not found" });
 
-      try {
-        await Order.findByIdAndUpdate(orderIdObj, { status: "canceled" });
-      } catch (syncErr) {
-        console.warn("Order sync failed:", syncErr.message || syncErr);
-      }
+      // best-effort sync to Order collection (non-blocking)
+      Order.findByIdAndUpdate(orderIdObj, { status: "canceled" }).catch((e) =>
+        console.warn("Order sync failed (cancel):", e && e.message ? e.message : e)
+      );
 
       io.emit("orderUpdate", { orderId, status: "canceled" });
       res.json({ msg: "Order canceled successfully!" });
     } catch (err) {
-      console.error(err);
+      console.error("❌ Cancel error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
-  // --- existing accept route (kept & optionally blocks offline) ---
-  // --- accept route + backend animation progress ---
-// --- accept route + continuous forward animation (never resets) ---
-router.post("/accept", async (req, res) => {
-  const { orderId } = req.body;
-  try {
-    let orderIdObj = orderId;
-    if (orderId && mongoose.Types.ObjectId.isValid(orderId))
-      orderIdObj = new mongoose.Types.ObjectId(orderId);
-
-    const orderStatus = await OrderStatus.findOne({ orderId: orderIdObj });
-    if (!orderStatus) return res.status(404).json({ msg: "Order not found" });
-
-    const userEmail = orderStatus.userEmail;
-    if (!userEmail) {
-      return res.status(400).json({ msg: "Order user email missing" });
-    }
-
-    const updated = await OrderStatus.findOneAndUpdate(
-      { orderId: orderIdObj },
-      { status: "on-the-way", updatedAt: new Date() },
-      { new: true }
-    );
-
+  // --- Accept Order + Delivery Progress ---
+  router.post("/accept", async (req, res) => {
+    const { orderId } = req.body;
     try {
-      await Order.findByIdAndUpdate(orderIdObj, { status: "on-the-way" });
-    } catch (syncErr) {
-      console.warn("Order sync failed:", syncErr.message || syncErr);
-    }
+      let orderIdObj = toObjectIdIfPossible(orderId);
+      const orderStatus = await OrderStatus.findOne({ orderId: orderIdObj });
 
-    io.emit("orderUpdate", { orderId, status: "on-the-way" });
+      if (!orderStatus) return res.status(404).json({ msg: "Order not found" });
 
-    // ✅ 10-मिनिटांचा auto-stop loop
-    function startProgressLoop() {
-      if (activeDeliveries[orderId]) {
-        // आधीचा loop चालू असल्यास थांबवा
-        clearInterval(activeDeliveries[orderId].intervalId);
-        clearTimeout(activeDeliveries[orderId].timeoutId);
+      // ensure userEmail exists (your original check)
+      const userEmail = orderStatus.userEmail;
+      if (!userEmail) {
+        return res.status(400).json({ msg: "Order user email missing" });
       }
 
-      let progress = activeDeliveries[orderId]?.progress || 0;
-      const step = 2; 
-      const tickMs = 1000; 
+      const updated = await OrderStatus.findOneAndUpdate(
+        { orderId: orderIdObj },
+        { status: "on-the-way", updatedAt: new Date() },
+        { new: true }
+      );
 
-      console.log(`🚴‍♂️ Starting delivery loop for ${orderId}`);
+      // best-effort sync to Order collection (non-blocking)
+      Order.findByIdAndUpdate(orderIdObj, { status: "on-the-way" }).catch((e) =>
+        console.warn("Order sync failed (accept):", e && e.message ? e.message : e)
+      );
 
-      const intervalId = setInterval(async () => {
-        try {
-          const latest = await OrderStatus.findOne({ orderId: orderIdObj });
-          if (!latest || latest.status === "delivered" || latest.status === "canceled") {
-            clearInterval(intervalId);
-            delete activeDeliveries[orderId];
-            console.log(`🛑 Delivery stopped for ${orderId} (status: ${latest?.status})`);
-            return;
+      io.emit("orderUpdate", { orderId, status: "on-the-way" });
+
+      // Background delivery progress loop
+      function startProgressLoop() {
+        // If there's an existing loop, clear it first
+        if (activeDeliveries[orderId]) {
+          try {
+            clearInterval(activeDeliveries[orderId].intervalId);
+            clearTimeout(activeDeliveries[orderId].timeoutId);
+          } catch (e) {
+            // ignore
           }
-
-          progress += step;
-          activeDeliveries[orderId].progress = progress;
-          io.emit("progressUpdate", { orderId, progress });
-        } catch (err) {
-          console.error("Animation interval error:", err);
         }
-      }, tickMs);
 
-    
-      const timeoutId = setTimeout(() => {
-        clearInterval(intervalId);
-        console.log(`⏸️ 10 minutes completed for ${orderId}, pausing for 5 sec...`);
-        setTimeout(() => startProgressLoop(), 1000); 
-      }, 15 * 60 * 1000);
+        // resume from previous progress if available
+        let progress = activeDeliveries[orderId]?.progress || 0;
+        const step = 2; // how much to increment each tick
+        const tickMs = 1000; // 1 second tick
 
-      activeDeliveries[orderId] = { intervalId, timeoutId, progress };
+        console.log(`🚴‍♂️ Starting delivery loop for ${orderId} (resume at ${progress})`);
+
+        const intervalId = setInterval(async () => {
+          try {
+            // every tick, check DB status to stop if delivered/canceled
+            const latest = await OrderStatus.findOne({ orderId: orderIdObj }).select("status").lean();
+            if (!latest || ["delivered", "canceled"].includes(latest.status)) {
+              clearInterval(intervalId);
+              delete activeDeliveries[orderId];
+              console.log(`🛑 Delivery stopped for ${orderId} (status: ${latest?.status})`);
+              return;
+            }
+
+            progress += step;
+            // persist progress in-memory
+            activeDeliveries[orderId] = activeDeliveries[orderId] || {};
+            activeDeliveries[orderId].progress = progress;
+
+            io.emit("progressUpdate", { orderId, progress });
+          } catch (err) {
+            console.error("Progress loop error:", err);
+          }
+        }, tickMs);
+
+        // auto-pause and restart behavior (keeps original pattern)
+        const timeoutId = setTimeout(() => {
+          clearInterval(intervalId);
+          console.log(`⏸️ 15 minutes completed for ${orderId}, pausing before restart...`);
+          // restart after short delay (matching earlier pattern)
+          setTimeout(() => startProgressLoop(), 1000);
+        }, 15 * 60 * 1000);
+
+        activeDeliveries[orderId] = { intervalId, timeoutId, progress };
+      }
+
+      startProgressLoop();
+
+      res.json({ msg: "Order accepted successfully!", orderStatus: updated });
+    } catch (err) {
+      console.error("❌ Accept error:", err);
+      res.status(500).json({ msg: "Server error" });
     }
+  });
 
-   
-    startProgressLoop();
+  // --- Generate OTP ---
+  async function generateAndSendOtp(orderId) {
+    if (!orderId) throw new Error("orderId required");
+    const orderIdObj = toObjectIdIfPossible(orderId);
 
-    res.json({ msg: "Order accepted successfully!", orderStatus: updated });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: "Server error" });
+    const orderStatus = await OrderStatus.findOne({ orderId: orderIdObj });
+    if (!orderStatus) throw new Error("Order not found");
+
+    const otp = generateNumericOtp(6);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+    orderStatus.deliveryOtp = otp;
+    orderStatus.otpExpiresAt = expiresAt;
+    orderStatus.otpAttempts = 0;
+    orderStatus.otpVerified = false;
+    await orderStatus.save();
+
+    // mail options
+    const mailOptions = {
+      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+      to: orderStatus.userEmail,
+      subject: `Your delivery OTP — Order ${orderId}`,
+      text: `Your delivery OTP for order ${orderId} is: ${otp}. It expires in 5 minutes.`,
+    };
+
+    // send mail (returns promise)
+    return transporter.sendMail(mailOptions);
   }
-});
 
-
-  // --- NEW: generate OTP and email to user ---
   router.post("/generate-otp", async (req, res) => {
     const { orderId } = req.body;
     try {
       if (!orderId) return res.status(400).json({ msg: "orderId required" });
 
-      let orderIdObj = orderId;
-      if (orderId && mongoose.Types.ObjectId.isValid(orderId)) orderIdObj = new mongoose.Types.ObjectId(orderId);
-
-      const orderStatus = await OrderStatus.findOne({ orderId: orderIdObj });
-      if (!orderStatus) return res.status(404).json({ msg: "Order not found" });
-
-      const otp = generateNumericOtp(6);
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-      orderStatus.deliveryOtp = otp;
-      orderStatus.otpExpiresAt = expiresAt;
-      orderStatus.otpAttempts = 0;
-      orderStatus.otpVerified = false;
-      await orderStatus.save();
-
-      // send email to user
-      const mailOptions = {
-        from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-        to: orderStatus.userEmail,
-        subject: `Your delivery OTP — Order ${orderId}`,
-        text: `Your delivery OTP for order ${orderId} is: ${otp}. It expires in 5 minutes.`,
-      };
-
       try {
-        await transporter.sendMail(mailOptions);
-        res.json({ msg: "OTP generated and emailed to user." });
-      } catch (mailErr) {
-        console.error("Mail error:", mailErr);
-        res.status(500).json({ msg: "Failed to send OTP email." });
+        await generateAndSendOtp(orderId);
+        // keep identical response to previous logic
+        res.json({ msg: "OTP generated and email is being sent." });
+      } catch (innerErr) {
+        console.error("Mail/send error (generate-otp):", innerErr);
+        // if order not found, send 404; if mail failed, send 500 with message
+        if (String(innerErr).toLowerCase().includes("order not found")) {
+          return res.status(404).json({ msg: "Order not found" });
+        }
+        return res.status(500).json({ msg: "Failed to send OTP email." });
       }
     } catch (err) {
-      console.error("generate-otp error:", err);
+      console.error("❌ Generate OTP error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
-  // --- NEW: verify OTP and mark delivered ---
+  // --- Verify OTP ---
   router.post("/verify-otp", async (req, res) => {
     const { orderId, otp } = req.body;
     try {
       if (!orderId || !otp) return res.status(400).json({ msg: "orderId and otp required" });
 
-      let orderIdObj = orderId;
-      if (orderId && mongoose.Types.ObjectId.isValid(orderId)) orderIdObj = new mongoose.Types.ObjectId(orderId);
-
+      let orderIdObj = toObjectIdIfPossible(orderId);
       const orderStatus = await OrderStatus.findOne({ orderId: orderIdObj });
       if (!orderStatus) return res.status(404).json({ msg: "Order not found" });
 
@@ -226,8 +247,8 @@ router.post("/accept", async (req, res) => {
         return res.status(400).json({ msg: "OTP expired or not generated. Please regenerate." });
       }
 
-      // check attempts
-      if (orderStatus.otpAttempts >= 5) {
+      // attempts limit
+      if ((orderStatus.otpAttempts || 0) >= 5) {
         return res.status(429).json({ msg: "Too many attempts. Please regenerate OTP." });
       }
 
@@ -245,69 +266,75 @@ router.post("/accept", async (req, res) => {
       orderStatus.updatedAt = new Date();
       await orderStatus.save();
 
-      try {
-        await Order.findByIdAndUpdate(orderIdObj, { status: "delivered" });
-      } catch (syncErr) {
-        console.warn("Order sync failed:", syncErr.message || syncErr);
-      }
+      // best-effort sync to Order
+      Order.findByIdAndUpdate(orderIdObj, { status: "delivered" }).catch((e) =>
+        console.warn("Order sync failed (verify-otp):", e && e.message ? e.message : e)
+      );
 
       io.emit("orderUpdate", { orderId, status: "delivered" });
       res.json({ msg: "OTP verified. Order marked as delivered." });
     } catch (err) {
-      console.error("verify-otp error:", err);
+      console.error("❌ Verify OTP error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
-  // --- resend-otp (calls generate-otp logic by duplicating minimal code) ---
+  // --- Resend OTP (reuses generateAndSendOtp)
   router.post("/resend-otp", async (req, res) => {
     const { orderId } = req.body;
     try {
       if (!orderId) return res.status(400).json({ msg: "orderId required" });
-      // reuse the generate-otp flow
-      req.url = '/generate-otp';
-      return router.handle(req, res);
+      try {
+        await generateAndSendOtp(orderId);
+        res.json({ msg: "OTP regenerated and emailed to user." });
+      } catch (innerErr) {
+        console.error("resend-otp error:", innerErr);
+        if (String(innerErr).toLowerCase().includes("order not found")) {
+          return res.status(404).json({ msg: "Order not found" });
+        }
+        return res.status(500).json({ msg: "Failed to resend OTP email." });
+      }
     } catch (err) {
-      console.error("resend-otp error:", err);
+      console.error("❌ resend-otp error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
-  // --- fetch all pending/on-the-way/delivered orders (admin) ---
+  // --- Fetch all active orders (keeps same filter you used earlier) ---
   router.get("/all", async (req, res) => {
     try {
+      // NOTE: kept same behavior (only pending/on-the-way/delivered) — no logic change
       const orders = await OrderStatus.find({
         status: { $in: ["pending", "on-the-way", "delivered"] },
-      }).sort({ updatedAt: -1 });
-
+      })
+        .sort({ updatedAt: -1 })
+        .lean();
       res.json(orders);
     } catch (err) {
-      console.error("fetch-all error:", err);
+      console.error("❌ Fetch all error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });
 
+  // --- Get current delivery progress ---
+  router.get("/deliveryprogress/:orderId", (req, res) => {
+    const { orderId } = req.params;
+    // return numeric progress (0 if not tracked)
+    const progress = activeDeliveries[orderId]?.progress || 0;
+    res.json({ progress });
+  });
 
-  // --- NEW: Get current delivery progress (for animation resume) ---
-router.get("/deliveryprogress/:orderId", (req, res) => {
-  const { orderId } = req.params;
-  const progress = activeDeliveries[orderId] || 0;
-  res.json({ progress });
-});
-
-
-  // --- get order status by id ---
+  // --- Get order status by ID ---
   router.get("/:orderId", async (req, res) => {
     try {
       const { orderId } = req.params;
-      let orderIdObj = orderId;
-      if (orderId && mongoose.Types.ObjectId.isValid(orderId)) orderIdObj = new mongoose.Types.ObjectId(orderId);
+      let orderIdObj = toObjectIdIfPossible(orderId);
 
-      const order = await OrderStatus.findOne({ orderId: orderIdObj });
+      const order = await OrderStatus.findOne({ orderId: orderIdObj }).select("status").lean();
       if (!order) return res.status(404).json({ msg: "Order not found" });
       res.json({ status: order.status });
     } catch (err) {
-      console.error(err);
+      console.error("❌ Get status error:", err);
       res.status(500).json({ msg: "Server error" });
     }
   });

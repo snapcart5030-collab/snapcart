@@ -1,4 +1,4 @@
-// models/OrderSchema.js
+// models/Order.js
 const mongoose = require('mongoose');
 
 const ProductSchema = new mongoose.Schema({
@@ -17,15 +17,12 @@ const OrderSchema = new mongoose.Schema({
   totalAmount: Number,
   status: { type: String, default: "pending" },
   statusRef: { type: mongoose.Schema.Types.ObjectId, ref: "OrderStatus" },
-
   location: {
     latitude: { type: Number },
     longitude: { type: Number },
     address: { type: String },
   },
-
   createdAt: { type: Date, default: Date.now }
 });
-
 
 module.exports = mongoose.model('Order', OrderSchema);
